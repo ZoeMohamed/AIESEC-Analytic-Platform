@@ -1,5 +1,6 @@
 import { createError, defineEventHandler, getQuery } from 'h3'
 import { expaFetch } from '../../utils/expaFetch'
+import { getExpaConfig } from '../../utils/expaConfig'
 
 const LIST_QUERY = /* GraphQL */ `
   query Committees($page: Int, $perPage: Int, $q: String, $filters: OfficeFilter) {
@@ -27,34 +28,6 @@ const AUTOCOMPLETE_QUERY = /* GraphQL */ `
     }
   }
 `
-
-function getExpaConfig() {
-  const config = useRuntimeConfig()
-  const endpoint = config.expaEndpoint || 'https://gis-api.aiesec.org/graphql'
-  const token = config.expaAccessToken
-
-  if (!token) {
-    throw createError({
-      statusCode: 500,
-      statusMessage: 'Missing EXPA access token',
-    })
-  }
-
-  const authHeader =
-    typeof config.expaAuthHeader === 'string' && config.expaAuthHeader.trim()
-      ? config.expaAuthHeader.trim()
-      : 'Authorization'
-  const authScheme =
-    typeof config.expaAuthScheme === 'string' ? config.expaAuthScheme.trim() : 'Bearer'
-
-  return {
-    endpoint,
-    headers: {
-      'Content-Type': 'application/json',
-      [authHeader]: authScheme ? `${authScheme} ${token}` : token,
-    },
-  }
-}
 
 function parseNumber(value: unknown, fallback: number) {
   const parsed = Number(value)

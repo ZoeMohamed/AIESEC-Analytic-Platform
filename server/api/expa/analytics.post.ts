@@ -1,5 +1,6 @@
 import { createError, defineEventHandler, readBody } from 'h3'
 import { expaFetch } from '../../utils/expaFetch'
+import { getExpaConfig } from '../../utils/expaConfig'
 
 type StatusKey =
   | 'applied'
@@ -510,27 +511,7 @@ export default defineEventHandler(async (event) => {
     : 5
   const includeRaw = Boolean(body.includeRaw)
 
-  const config = useRuntimeConfig()
-  const endpoint = config.expaEndpoint || 'https://gis-api.aiesec.org/graphql'
-  const token = config.expaAccessToken
-
-  if (!token) {
-    throw createError({
-      statusCode: 500,
-      statusMessage: 'Missing EXPA access token',
-    })
-  }
-
-  const authHeader =
-    typeof config.expaAuthHeader === 'string' && config.expaAuthHeader.trim()
-      ? config.expaAuthHeader.trim()
-      : 'Authorization'
-  const authScheme =
-    typeof config.expaAuthScheme === 'string' ? config.expaAuthScheme.trim() : 'Bearer'
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    [authHeader]: authScheme ? `${authScheme} ${token}` : token,
-  }
+  const { endpoint, headers } = getExpaConfig()
 
   const variables: AnalyticsVariables = {
     startDate,
