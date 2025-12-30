@@ -1,0 +1,18 @@
+{
+  "name": "aiesec-analytics",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "nuxt": "^4.2.2",
+    "undici": "^7.16.0",
+    "vue": "^3.5.26",
+    "vue-router": "^4.6.4"
+  }
+}
