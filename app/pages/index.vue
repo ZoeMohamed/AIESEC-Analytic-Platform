@@ -10,10 +10,24 @@
           monthly volume and trends.
         </p>
         <div class="hero__meta">
-          <span class="chip">EXPA GraphQL</span>
+          <span class="chip">AIESEC Analytics API</span>
           <span class="chip">UTC Timeline</span>
           <span class="chip">Updated {{ lastUpdatedLabel }}</span>
-          <span v-if="isLoading" class="chip chip--loading">Loading</span>
+          <span v-if="responseMeta?.cached" class="chip chip--accent">
+            Cached {{ cacheAgeLabel }}
+          </span>
+          <span v-else-if="responseMeta?.fetchMs" class="chip chip--accent">
+            Fetched in {{ fetchDurationLabel }}
+          </span>
+          <span v-if="responseMeta?.mode" class="chip">
+            Mode {{ responseMeta.mode }}
+          </span>
+          <span v-if="isLoading" class="chip chip--loading">
+            Loading {{ loadingElapsedLabel }}
+          </span>
+          <span v-if="cachePreviewNote" class="chip chip--muted">
+            {{ cachePreviewNote }}
+          </span>
         </div>
       </div>
       <div class="hero__actions">
@@ -33,8 +47,31 @@
         >
           Reset filters
         </button>
+        <button
+          v-if="isLoading"
+          class="btn btn--ghost btn--danger"
+          type="button"
+          @click="cancelLoad"
+        >
+          Cancel
+        </button>
       </div>
     </header>
+
+    <section v-if="isLoading" class="loading-banner">
+      <div>
+        <strong>Fetching analytics</strong>
+        <p>{{ loadingMessage }}</p>
+        <small v-if="loadingWarning">{{ loadingWarning }}</small>
+      </div>
+      <div class="loading-banner__meta">
+        <span>{{ loadingElapsedLabel }}</span>
+        <span>{{ loadingProgress }}%</span>
+      </div>
+      <div class="loading-bar">
+        <span :style="{ width: `${loadingProgress}%` }" />
+      </div>
+    </section>
 
     <div class="layout">
       <aside class="panel">
@@ -68,11 +105,38 @@
             <small v-else>{{ filters.programmes.length }} selected</small>
           </label>
           <label class="field">
-            <span>Committees</span>
+            <span>Country MC</span>
+            <input
+              v-model="countrySearch"
+              type="text"
+              placeholder="Search country MC"
+            />
+            <select v-model="selectedCountryId" size="6">
+              <option
+                v-for="country in countryOptions"
+                :key="country.id"
+                :value="country.id"
+              >
+                {{ country.label }}
+              </option>
+            </select>
+            <small v-if="countryLoading">Loading countries...</small>
+            <small v-else>{{ countryPaging.totalItems }} countries</small>
+            <button
+              v-if="countryPaging.page < countryPaging.totalPages"
+              class="btn btn--ghost btn--inline"
+              type="button"
+              @click="loadMoreCountries"
+            >
+              Load more
+            </button>
+          </label>
+          <label class="field">
+            <span>Local committees</span>
             <input
               v-model="committeeSearch"
               type="text"
-              placeholder="Search committees (2+ chars)"
+              placeholder="Search local committees"
             />
             <select v-model="filters.committees" multiple size="6">
               <option
@@ -84,15 +148,18 @@
               </option>
             </select>
             <small v-if="committeeLoading">Loading committees...</small>
-            <small v-else-if="committeeSearch.trim().length < 2">
-              Type at least 2 characters to search.
+            <small v-else-if="!selectedCountryId">
+              Select a country to load suboffices.
+            </small>
+            <small v-else-if="committeeSearch.trim().length === 0">
+              Showing {{ committeeOptions.length }} committees.
             </small>
             <small v-else>{{ committeeOptions.length }} results</small>
             <button
               v-if="committeePaging.page < committeePaging.totalPages"
               class="btn btn--ghost btn--inline"
               type="button"
-              @click="loadMoreCommittees"
+              @click="loadMoreSuboffices"
             >
               Load more
             </button>
@@ -121,6 +188,20 @@
           <details class="advanced">
             <summary>Advanced filters</summary>
             <div class="advanced__content">
+              <label class="field">
+                <span>Metric</span>
+                <select v-model="filters.metric">
+                  <option value="applications">Applications (doc_count)</option>
+                  <option value="applicants">Unique applicants</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Direction</span>
+                <select v-model="filters.direction">
+                  <option value="o">Outgoing (o)</option>
+                  <option value="i">Incoming (i)</option>
+                </select>
+              </label>
               <label class="field">
                 <span>Focus status</span>
                 <select v-model="filters.focusStatus">
@@ -159,12 +240,13 @@
                 Overlay moving average
               </label>
               <label class="toggle">
-                <input v-model="filters.fetchAllPages" type="checkbox" />
-                Fetch additional pages
+                <input v-model="filters.fastMode" type="checkbox" />
+                Fast mode (single request)
               </label>
               <label class="field">
-                <span>Max pages (per status)</span>
-                <input v-model.number="filters.maxPages" type="number" min="1" max="20" />
+                <span>Max months to fetch</span>
+                <input v-model.number="filters.maxMonths" type="number" min="1" max="24" />
+                <small>Leave empty to fetch the full range.</small>
               </label>
             </div>
           </details>
@@ -180,11 +262,15 @@
       </aside>
 
       <main class="content">
+        <p v-if="isLoading && data" class="refresh-note">
+          Refreshing data, showing last results.
+        </p>
         <section class="stats-grid">
           <article
             v-for="status in selectedStatusOptions"
             :key="status.key"
             class="stat-card"
+            :class="{ 'stat-card--loading': isLoading && !data }"
             :style="{ '--accent-color': status.color }"
           >
             <div class="stat-card__accent" />
@@ -301,6 +387,18 @@
             <div v-else class="empty">
               No data yet. Apply filters to load activity.
             </div>
+            <div v-if="isLoading" class="chart-overlay">
+              <div class="chart-overlay__content">
+                <div class="spinner" />
+                <div>
+                  <p>Loading analytics</p>
+                  <small>{{ loadingMessage }}</small>
+                </div>
+              </div>
+              <div class="loading-bar loading-bar--overlay">
+                <span :style="{ width: `${loadingProgress}%` }" />
+              </div>
+            </div>
           </div>
 
           <footer class="chart-card__footer">
@@ -311,6 +409,10 @@
             <div class="insight">
               <strong>Avg window:</strong>
               <span>{{ filters.movingAverageWindow }} months</span>
+            </div>
+            <div v-if="effectiveRangeLabel" class="insight">
+              <strong>Range used:</strong>
+              <span>{{ effectiveRangeLabel }}</span>
             </div>
           </footer>
         </section>
@@ -329,11 +431,14 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 type StatusKey =
   | 'applied'
+  | 'matched'
   | 'accepted'
   | 'approved'
   | 'realized'
   | 'completed'
   | 'finished'
+
+type MetricKey = 'applications' | 'applicants'
 
 interface AnalyticsResponse {
   months: string[]
@@ -357,11 +462,22 @@ interface AnalyticsResponse {
       series: Record<StatusKey, Array<number | null>>
     }
     conversionRatePct?: {
-      appliedToAccepted: Array<number | null>
-      acceptedToApproved: Array<number | null>
-      approvedToRealized: Array<number | null>
-      realizedToCompleted: Array<number | null>
+      appliedToMatched?: Array<number | null>
+      matchedToAccepted?: Array<number | null>
+      acceptedToApproved?: Array<number | null>
+      approvedToRealized?: Array<number | null>
+      realizedToCompleted?: Array<number | null>
     }
+  }
+  meta?: {
+    cached?: boolean
+    cacheAgeSeconds?: number
+    fetchMs?: number
+    mode?: string
+    months?: number
+    requestedMonths?: number
+    effectiveRange?: { startDate?: string; endDate?: string }
+    trimmed?: boolean
   }
 }
 
@@ -383,6 +499,7 @@ const chartPadding = { top: 24, right: 40, bottom: 48, left: 60 }
 
 const statusOptions: StatusOption[] = [
   { key: 'applied', label: 'Applied', color: '#0b2d5b' },
+  { key: 'matched', label: 'Matched', color: '#0f3b6f' },
   { key: 'accepted', label: 'Accepted', color: '#12447a' },
   { key: 'approved', label: 'Approved', color: '#1b65b8' },
   { key: 'realized', label: 'Realized', color: '#2c8ad8' },
@@ -392,7 +509,7 @@ const statusOptions: StatusOption[] = [
 
 const defaultRange = (() => {
   const end = new Date()
-  const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 11, 1))
+  const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 2, 1))
   return {
     startDate: start.toISOString().slice(0, 10),
     endDate: end.toISOString().slice(0, 10),
@@ -402,20 +519,31 @@ const defaultRange = (() => {
 const filters = reactive({
   startDate: defaultRange.startDate,
   endDate: defaultRange.endDate,
-  programmes: [] as string[],
+  programmes: ['7'] as string[],
   committees: [] as string[],
-  statuses: ['applied', 'accepted', 'approved', 'realized'] as StatusKey[],
+  metric: 'applications' as MetricKey,
+  direction: 'o' as 'o' | 'i',
+  statuses: ['applied', 'matched', 'accepted', 'approved', 'realized'] as StatusKey[],
   focusStatus: 'accepted' as StatusKey,
   committeeScope: 'opportunity' as 'person' | 'opportunity',
   movingAverageWindow: 3,
   normalize: false,
   showMovingAverage: true,
-  fetchAllPages: false,
-  maxPages: 5,
+  fastMode: true,
+  maxMonths: 3,
 })
 
 const programmeOptions = ref<FilterOption[]>([])
 const programmeLoading = ref(false)
+const countryOptions = ref<FilterOption[]>([])
+const countrySearch = ref('')
+const countryLoading = ref(false)
+const countryPaging = ref({
+  page: 1,
+  totalPages: 1,
+  totalItems: 0,
+})
+const selectedCountryId = ref('1539')
 const committeeOptions = ref<FilterOption[]>([])
 const committeeSearch = ref('')
 const committeeLoading = ref(false)
@@ -425,16 +553,84 @@ const committeePaging = ref({
   totalItems: 0,
 })
 let committeeSearchTimer: ReturnType<typeof setTimeout> | null = null
+let countrySearchTimer: ReturnType<typeof setTimeout> | null = null
 const filterError = ref<string | null>(null)
 
 const data = ref<AnalyticsResponse | null>(null)
 const error = ref<string | null>(null)
 const isLoading = ref(false)
 const lastUpdated = ref<Date | null>(null)
+const loadingElapsed = ref(0)
+const cachePreviewNote = ref('')
+let loadingTimer: ReturnType<typeof setInterval> | null = null
+let activeController: AbortController | null = null
 
 const lastUpdatedLabel = computed(() => {
   if (!lastUpdated.value) return 'Not refreshed'
   return lastUpdated.value.toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
+})
+
+const responseMeta = computed(() => data.value?.meta)
+
+const cacheAgeLabel = computed(() => {
+  const seconds = responseMeta.value?.cacheAgeSeconds
+  if (!seconds && seconds !== 0) return ''
+  const minutes = Math.floor(seconds / 60)
+  if (minutes > 0) return `${minutes}m ago`
+  return `${seconds}s ago`
+})
+
+const fetchDurationLabel = computed(() => {
+  const fetchMs = responseMeta.value?.fetchMs
+  if (!fetchMs && fetchMs !== 0) return ''
+  return `${Math.max(1, Math.round(fetchMs / 1000))}s`
+})
+
+const loadingElapsedLabel = computed(() => {
+  const minutes = Math.floor(loadingElapsed.value / 60)
+  const seconds = loadingElapsed.value % 60
+  return minutes > 0
+    ? `${minutes}m ${String(seconds).padStart(2, '0')}s`
+    : `${seconds}s`
+})
+
+const monthCount = computed(() => {
+  const start = new Date(filters.startDate)
+  const end = new Date(filters.endDate)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0
+  const months =
+    (end.getUTCFullYear() - start.getUTCFullYear()) * 12 +
+    (end.getUTCMonth() - start.getUTCMonth()) +
+    1
+  return Math.max(1, months)
+})
+
+const loadingMessage = computed(() => {
+  if (!isLoading.value) return ''
+  const months = monthCount.value
+  const modeLabel = filters.fastMode ? 'single request' : 'monthly requests'
+  const suffix = filters.maxMonths ? ` (max ${filters.maxMonths} months)` : ''
+  return `Fetching ${months} month${months === 1 ? '' : 's'} via ${modeLabel}${suffix}.`
+})
+
+const loadingWarning = computed(() => {
+  if (!isLoading.value) return ''
+  if (loadingElapsed.value < 20) return ''
+  return 'The analytics API can be slow. Thanks for waiting.'
+})
+
+const loadingProgress = computed(() => {
+  if (!isLoading.value) return 0
+  const estimate = Math.max(15, monthCount.value * (filters.fastMode ? 6 : 20))
+  const ratio = Math.min(0.95, loadingElapsed.value / estimate)
+  return Math.round(ratio * 100)
+})
+
+const effectiveRangeLabel = computed(() => {
+  const start = responseMeta.value?.effectiveRange?.startDate
+  const end = responseMeta.value?.effectiveRange?.endDate
+  if (!start || !end) return ''
+  return `${start} to ${end}`
 })
 
 const selectedStatusOptions = computed(() =>
@@ -610,7 +806,70 @@ function formatMonth(month: string) {
 function statusSummaryLabel(status: StatusKey) {
   const summary = data.value?.statusSummary?.[status]
   if (!summary) return 'No records'
-  return `${formatNumber(summary.total_items)} records`
+  const label = filters.metric === 'applicants' ? 'people' : 'applications'
+  return `${formatNumber(summary.total_items)} ${label}`
+}
+
+function buildCacheKey(payload: {
+  startDate: string
+  endDate: string
+  programmes: number[] | null
+  officeIds: number[] | null
+  metric: string
+  direction: string
+  fastMode: boolean
+  maxMonths: number | null
+}) {
+  const programmesKey = payload.programmes?.slice().sort().join(',') || 'all'
+  const officesKey = payload.officeIds?.slice().sort().join(',') || 'default'
+  const maxMonthsKey = payload.maxMonths ? String(payload.maxMonths) : 'all'
+  return [
+    'analytics',
+    payload.startDate,
+    payload.endDate,
+    programmesKey,
+    officesKey,
+    payload.metric,
+    payload.direction,
+    payload.fastMode ? 'single' : 'monthly',
+    maxMonthsKey,
+  ].join('|')
+}
+
+function readCachedResponse(cacheKey: string) {
+  if (typeof window === 'undefined') return null
+  const raw = window.localStorage.getItem(cacheKey)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as {
+      fetchedAt: number
+      data: AnalyticsResponse
+    }
+    if (!parsed?.data) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writeCachedResponse(cacheKey: string, response: AnalyticsResponse) {
+  if (typeof window === 'undefined') return
+  const payload = JSON.stringify({ fetchedAt: Date.now(), data: response })
+  window.localStorage.setItem(cacheKey, payload)
+}
+
+function startLoadingTimer() {
+  loadingElapsed.value = 0
+  if (loadingTimer) clearInterval(loadingTimer)
+  loadingTimer = setInterval(() => {
+    loadingElapsed.value += 1
+  }, 1000)
+}
+
+function stopLoadingTimer() {
+  if (loadingTimer) clearInterval(loadingTimer)
+  loadingTimer = null
+  loadingElapsed.value = 0
 }
 
 async function loadProgrammes() {
@@ -630,29 +889,62 @@ async function loadProgrammes() {
   }
 }
 
-async function loadCommittees(page = 1, append = false) {
-  committeeLoading.value = true
+async function loadCountries(page = 1, append = false) {
+  countryLoading.value = true
   filterError.value = null
-  const queryText = committeeSearch.value.trim()
-  if (!queryText || queryText.length < 2) {
-    if (!filters.committees.length) {
-      committeeOptions.value = []
-    }
-    committeePaging.value = {
-      page: 1,
-      totalPages: 1,
-      totalItems: committeeOptions.value.length,
-    }
-    committeeLoading.value = false
-    return
-  }
+  const queryText = countrySearch.value.trim()
+  const shouldFilter = queryText.length > 0
   try {
     const response = await $fetch<{
       items: FilterOption[]
       paging: { current_page: number; total_pages: number; total_items: number }
     }>('/api/expa/committees', {
       query: {
-        q: queryText || undefined,
+        q: shouldFilter ? queryText : undefined,
+        page,
+        perPage: 50,
+      },
+    })
+    const items = response.items ?? []
+    if (append) {
+      const merged = new Map(countryOptions.value.map((item) => [item.id, item]))
+      items.forEach((item) => merged.set(item.id, item))
+      countryOptions.value = Array.from(merged.values())
+    } else {
+      countryOptions.value = items
+    }
+    countryPaging.value = {
+      page: response.paging?.current_page ?? page,
+      totalPages: response.paging?.total_pages ?? 1,
+      totalItems: response.paging?.total_items ?? items.length,
+    }
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Unable to load countries.'
+    filterError.value = message
+  } finally {
+    countryLoading.value = false
+  }
+}
+
+async function loadSuboffices(page = 1, append = false) {
+  if (!selectedCountryId.value) {
+    committeeOptions.value = []
+    committeePaging.value = { page: 1, totalPages: 1, totalItems: 0 }
+    return
+  }
+  committeeLoading.value = true
+  filterError.value = null
+  const queryText = committeeSearch.value.trim()
+  const shouldFilter = queryText.length > 0
+  try {
+    const response = await $fetch<{
+      items: FilterOption[]
+      paging: { current_page: number; total_pages: number; total_items: number }
+    }>('/api/expa/committees', {
+      query: {
+        parentId: selectedCountryId.value,
+        q: shouldFilter ? queryText : undefined,
         page,
         perPage: 50,
       },
@@ -679,79 +971,161 @@ async function loadCommittees(page = 1, append = false) {
   }
 }
 
-function loadMoreCommittees() {
-  if (committeeSearch.value.trim().length < 2) return
+function loadMoreCountries() {
+  const nextPage = countryPaging.value.page + 1
+  if (nextPage <= countryPaging.value.totalPages) {
+    loadCountries(nextPage, true)
+  }
+}
+
+function loadMoreSuboffices() {
   const nextPage = committeePaging.value.page + 1
   if (nextPage <= committeePaging.value.totalPages) {
-    loadCommittees(nextPage, true)
+    loadSuboffices(nextPage, true)
   }
 }
 
 async function loadData() {
   error.value = null
   isLoading.value = true
+  cachePreviewNote.value = ''
+  startLoadingTimer()
+  if (activeController) {
+    activeController.abort()
+  }
+  activeController = new AbortController()
   try {
+    const officeIds =
+      parseIdArray(filters.committees) ??
+      (selectedCountryId.value ? [Number(selectedCountryId.value)] : null)
+    const maxMonths = Number.isFinite(filters.maxMonths)
+      ? Math.max(1, Math.floor(filters.maxMonths))
+      : null
+    const cacheKey = buildCacheKey({
+      startDate: filters.startDate,
+      endDate: filters.endDate,
+      programmes: parseIdArray(filters.programmes),
+      officeIds,
+      metric: filters.metric,
+      direction: filters.direction,
+      fastMode: filters.fastMode,
+      maxMonths,
+    })
+    const cached = readCachedResponse(cacheKey)
+    if (cached?.data) {
+      data.value = cached.data
+      lastUpdated.value = new Date(cached.fetchedAt)
+      cachePreviewNote.value = 'Showing cached results'
+    }
     const response = await $fetch<AnalyticsResponse>('/api/expa/analytics', {
       method: 'POST',
+      signal: activeController.signal,
       body: {
         startDate: filters.startDate,
         endDate: filters.endDate,
         programmes: parseIdArray(filters.programmes),
-        committees: parseIdArray(filters.committees),
+        officeIds,
+        metric: filters.metric,
+        direction: filters.direction,
         committeeScope: filters.committeeScope,
-        fetchAllPages: filters.fetchAllPages,
-        maxPages: filters.maxPages,
+        singleRequest: filters.fastMode,
+        maxMonths,
       },
     })
     data.value = response
     lastUpdated.value = new Date()
+    writeCachedResponse(cacheKey, response)
+    cachePreviewNote.value = ''
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unable to load analytics.'
-    error.value = message
+    if (err instanceof Error && err.name === 'AbortError') {
+      error.value = 'Request cancelled.'
+    } else {
+      const message =
+        err instanceof Error ? err.message : 'Unable to load analytics.'
+      error.value = message
+    }
   } finally {
     isLoading.value = false
+    stopLoadingTimer()
+    activeController = null
+  }
+}
+
+function cancelLoad() {
+  if (activeController) {
+    activeController.abort()
   }
 }
 
 function resetFilters() {
   filters.startDate = defaultRange.startDate
   filters.endDate = defaultRange.endDate
-  filters.programmes = []
+  filters.programmes = ['7']
   filters.committees = []
-  filters.statuses = ['applied', 'accepted', 'approved', 'realized'] as StatusKey[]
+  filters.metric = 'applications'
+  filters.direction = 'o'
+  filters.statuses = ['applied', 'matched', 'accepted', 'approved', 'realized'] as StatusKey[]
   filters.focusStatus = 'accepted'
   filters.committeeScope = 'opportunity'
   filters.movingAverageWindow = 3
   filters.normalize = false
   filters.showMovingAverage = true
-  filters.fetchAllPages = false
-  filters.maxPages = 5
+  filters.fastMode = true
+  filters.maxMonths = 3
   filterError.value = null
+  selectedCountryId.value = '1539'
+  countrySearch.value = ''
+  countryOptions.value = []
+  countryPaging.value = { page: 1, totalPages: 1, totalItems: 0 }
   committeeSearch.value = ''
   committeeOptions.value = []
   committeePaging.value = { page: 1, totalPages: 1, totalItems: 0 }
+  loadCountries()
+  loadSuboffices()
   loadData()
 }
 
 watch(
-  () => committeeSearch.value,
-  (value) => {
-    if (committeeSearchTimer) {
-      clearTimeout(committeeSearchTimer)
+  () => countrySearch.value,
+  () => {
+    if (countrySearchTimer) {
+      clearTimeout(countrySearchTimer)
     }
-    committeeSearchTimer = setTimeout(() => {
-      const query = value.trim()
-      if (!query || query.length >= 2) {
-        loadCommittees(1)
-      }
+    countrySearchTimer = setTimeout(() => {
+      loadCountries(1)
     }, 350)
   },
   { flush: 'post' }
 )
 
+watch(
+  () => committeeSearch.value,
+  () => {
+    if (committeeSearchTimer) {
+      clearTimeout(committeeSearchTimer)
+    }
+    committeeSearchTimer = setTimeout(() => {
+      loadSuboffices(1)
+    }, 350)
+  },
+  { flush: 'post' }
+)
+
+watch(
+  () => selectedCountryId.value,
+  () => {
+    filters.committees = []
+    committeeSearch.value = ''
+    committeeOptions.value = []
+    committeePaging.value = { page: 1, totalPages: 1, totalItems: 0 }
+    loadSuboffices(1)
+  }
+)
+
 onMounted(() => {
   loadProgrammes()
-  loadCommittees()
+  loadCountries()
+  loadSuboffices()
   loadData()
 })
 </script>
@@ -838,6 +1212,16 @@ onMounted(() => {
   font-size: 0.85rem;
 }
 
+.chip--accent {
+  background: rgba(75, 178, 242, 0.2);
+  color: #0b1e39;
+}
+
+.chip--muted {
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.8);
+}
+
 .chip--loading {
   background: rgba(255, 255, 255, 0.3);
   color: #0b1526;
@@ -872,6 +1256,11 @@ onMounted(() => {
   border: 1px solid rgba(255, 255, 255, 0.3);
 }
 
+.btn--danger {
+  border-color: rgba(255, 148, 148, 0.7);
+  color: #ffe2e2;
+}
+
 .btn--inline {
   align-self: flex-start;
   padding: 6px 10px;
@@ -901,6 +1290,47 @@ onMounted(() => {
   gap: 28px;
   margin-top: 32px;
   align-items: start;
+}
+
+.loading-banner {
+  margin-top: 20px;
+  padding: 16px 20px;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 12px 32px rgba(12, 35, 71, 0.12);
+  display: grid;
+  gap: 10px;
+}
+
+.loading-banner p {
+  margin: 6px 0 4px;
+  color: #3e5675;
+}
+
+.loading-banner small {
+  color: #6a7f9c;
+}
+
+.loading-banner__meta {
+  display: flex;
+  justify-content: space-between;
+  color: #1b365d;
+  font-weight: 600;
+}
+
+.loading-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: #e3ebf8;
+  overflow: hidden;
+}
+
+.loading-bar span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #4bb2f2 0%, #1b65b8 100%);
+  transition: width 0.4s ease;
 }
 
 .panel {
@@ -1018,6 +1448,15 @@ onMounted(() => {
   align-content: start;
 }
 
+.refresh-note {
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: #eef4ff;
+  color: #304767;
+  font-size: 0.9rem;
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1112,6 +1551,10 @@ onMounted(() => {
   box-shadow: 0 18px 40px rgba(12, 35, 71, 0.16);
 }
 
+.stat-card--loading {
+  opacity: 0.65;
+}
+
 .chart-card {
   background: #fff;
   border-radius: 24px;
@@ -1161,6 +1604,7 @@ onMounted(() => {
   background: linear-gradient(180deg, #f4f8ff 0%, #ffffff 100%);
   border-radius: 18px;
   padding: 16px;
+  position: relative;
 }
 
 .chart {
@@ -1215,6 +1659,53 @@ onMounted(() => {
   padding: 24px;
   text-align: center;
   color: #5a6f8b;
+}
+
+.chart-overlay {
+  position: absolute;
+  inset: 16px;
+  border-radius: 14px;
+  background: rgba(245, 248, 255, 0.92);
+  display: grid;
+  align-content: center;
+  gap: 16px;
+  padding: 20px;
+  text-align: left;
+}
+
+.chart-overlay__content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #1b365d;
+}
+
+.chart-overlay__content p {
+  margin: 0;
+  font-weight: 600;
+}
+
+.chart-overlay__content small {
+  color: #5a6f8b;
+}
+
+.loading-bar--overlay {
+  margin-top: 8px;
+}
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(27, 101, 184, 0.2);
+  border-top-color: #1b65b8;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 980px) {
