@@ -186,10 +186,8 @@ function toPositiveInt(value: unknown, fallback: number) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
 }
 
-function buildAuthHeader(token: string, scheme: string) {
-  const trimmed = token.trim()
-  const normalizedScheme = scheme.trim()
-  return normalizedScheme.length > 0 ? `${normalizedScheme} ${trimmed}` : trimmed
+function buildAuthHeader(token: string) {
+  return token.trim()
 }
 
 function filterAndPage(
@@ -225,9 +223,8 @@ async function fetchSubOffices(params: {
   parentId: number
   token: string
   endpoint: string
-  scheme: string
 }) {
-  const { parentId, token, endpoint, scheme } = params
+  const { parentId, token, endpoint } = params
   const now = Date.now()
   const cached = cache.get(parentId)
   if (cached && cached.items.length && now - cached.fetchedAt < CACHE_TTL_MS) {
@@ -243,7 +240,7 @@ async function fetchSubOffices(params: {
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        Authorization: buildAuthHeader(token, scheme),
+        Authorization: buildAuthHeader(token),
       },
       body: JSON.stringify({
         query: COMMITTEE_QUERY,
@@ -348,14 +345,10 @@ export default defineEventHandler(async (event) => {
       statusMessage: 'Missing EXPA access token',
     })
   }
-  const scheme =
-    typeof config.expaAuthScheme === 'string' ? config.expaAuthScheme.trim() : ''
-
   const committees = await fetchSubOffices({
     parentId,
     token,
     endpoint,
-    scheme,
   })
 
   return filterAndPage(committees, search, page, perPage)
